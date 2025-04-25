@@ -60,14 +60,29 @@ def average_color(filtered_arr):
 def median_color(filtered_arr):
     return tuple(np.median(filtered_arr, axis=0).astype(int))
 
-def kmeans_color(filtered_arr, k=3):
+def kmeans_color(filtered_arr, k=3, mode="biggest"):
     if KMeans is None:
         raise ImportError("scikit-learn not installed")
+
     kmeans = KMeans(n_clusters=k, n_init=10, random_state=0)
     kmeans.fit(filtered_arr)
-    colors, counts = np.unique(kmeans.labels_, return_counts=True)
-    dom_cluster = np.argmax(counts)
-    return tuple(map(int, kmeans.cluster_centers_[dom_cluster]))
+    centers = kmeans.cluster_centers_.astype(np.uint8)
+    labels = kmeans.labels_
+
+    if mode == "biggest":
+        _, counts = np.unique(labels, return_counts=True)
+        idx = np.argmax(counts)
+    elif mode == "brightest":
+        # Convert to HSV and get the one with max value (brightness)
+        hsv = np.array([cv2.cvtColor(c.reshape(1, 1, 3), cv2.COLOR_RGB2HSV)[0][0] for c in centers])
+        idx = np.argmax(hsv[:, 2])  # Value (brightness)
+    elif mode == "saturated":
+        hsv = np.array([cv2.cvtColor(c.reshape(1, 1, 3), cv2.COLOR_RGB2HSV)[0][0] for c in centers])
+        idx = np.argmax(hsv[:, 1])  # Saturation
+    else:
+        raise ValueError("Invalid mode. Use 'biggest', 'brightest', or 'saturated'.")
+
+    return tuple(map(int, centers[idx]))
 
 def most_saturated_color(filtered_arr, min_value=64):
     """
@@ -87,7 +102,8 @@ def most_saturated_color(filtered_arr, min_value=64):
         idx_all = np.argmax(hsv[:,1])
     return tuple(filtered_arr[idx_all])
 
-def get_color_by_algorithm(image_path, resize_to=(100,100), dark_threshold=30, white_threshold=225, algo="dominant"):
+def get_color_by_algorithm(image_path, resize_to=(100,100), dark_threshold=30, white_threshold=225, algo="dominant", kmeans_k=3, kmeans_mode="biggest"):
+    
     img = Image.open(image_path).convert('RGB')
     img = img.resize(resize_to, resample=Image.NEAREST)
     arr = np.array(img).reshape(-1, 3)
@@ -99,7 +115,7 @@ def get_color_by_algorithm(image_path, resize_to=(100,100), dark_threshold=30, w
     elif algo == "median":
         return median_color(filtered_arr)
     elif algo == "kmeans":
-        return kmeans_color(filtered_arr, k=3)
+        return kmeans_color(filtered_arr, k=kmeans_k, mode=kmeans_mode)
     elif algo == "saturated":
         return most_saturated_color(filtered_arr)
     else:
@@ -155,7 +171,10 @@ def movie_palette(
     n_bars=400,
     dark_threshold=30,
     white_threshold=225,
+    kmeans_k=3,
+    kmeans_mode="biggest",
     color_algo="dominant"
+   
 ):
     height, width, bar_width = compute_palette_size(ratio, short_side, n_bars)
     print(f"Output image size: {width}x{height}, Bar width: {bar_width}px, Bars: {n_bars}")
@@ -175,7 +194,9 @@ def movie_palette(
             frame_path, 
             dark_threshold=dark_threshold,
             white_threshold=white_threshold,
-            algo=color_algo
+            algo=color_algo,
+            kmeans_k=kmeans_k, 
+            kmeans_mode=kmeans_mode
         )
         palette[:, i*bar_width:(i+1)*bar_width] = color
         os.remove(frame_path)
@@ -201,8 +222,10 @@ if __name__ == "__main__":
     parser.add_argument("--n-bars", type=int, default=400, help="Number of color bars (default: 400).")
     parser.add_argument("--dark-threshold", type=int, default=30, help="Ignore pixels darker than this value (default: 30)")
     parser.add_argument("--white-threshold", type=int, default=225, help="Ignore pixels brighter than this value (default: 225)")
-    parser.add_argument("--color-algo", choices=["dominant", "average", "median", "kmeans", "saturated"], default="dominant",
-                        help="Algorithm for picking color for each frame: dominant, average, median, kmeans, saturated (default: dominant)")
+    parser.add_argument("--color-algo", choices=["dominant", "average", "median", "kmeans", "saturated"], default="dominant", help="Algorithm for picking color for each frame: dominant, average, median, kmeans, saturated (default: dominant)")
+    parser.add_argument("--kmeans-mode", choices=["biggest", "brightest", "saturated"], default="biggest", help="Which k-means cluster to choose: biggest (default), brightest, or saturated")
+    parser.add_argument("--kmeans-k", type=int, default=3, help="Number of clusters to use in k-means color extraction (default: 3)")
+
 
     args = parser.parse_args()
 
@@ -214,5 +237,7 @@ if __name__ == "__main__":
         args.n_bars,
         args.dark_threshold,
         args.white_threshold,
+        args.kmeans_k,
+        args.kmeans_mode,
         args.color_algo
     )
