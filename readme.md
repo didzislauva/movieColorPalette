@@ -1,6 +1,6 @@
 # Movie Palette Generator
 
-Generate a **movie palette** (film barcode) image like [this](#example), where each vertical stripe represents the dominant color of a sampled frame from a movie.  
+Generate a **movie palette** (film barcode), where each vertical stripe represents the dominant color of a sampled frame from a movie.  
 Inspired by classic “film barcode” art, this tool summarizes a movie’s color mood in a single image.
 
 ---
@@ -20,6 +20,7 @@ Inspired by classic “film barcode” art, this tool summarizes a movie’s col
 
 ![movie_palette](https://github.com/user-attachments/assets/efa763dd-8b84-411d-8608-ebaa801b6427)
 
+( Color palette from this short animation movie https://www.youtube.com/watch?v=W5e9GJfHC4A)
 
 ---
 
