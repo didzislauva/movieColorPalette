@@ -5,6 +5,10 @@ import subprocess
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
+import cv2
+
+from sklearn.cluster import KMeans
+
 
 def get_video_duration(video_path):
     """Returns video duration in seconds."""
@@ -35,6 +39,73 @@ def extract_frame_at(video_path, timestamp, output_path):
         stderr=subprocess.DEVNULL
     )
 
+
+def filter_pixels(arr, dark_threshold=30, white_threshold=225):
+    """Return pixels not too dark and not too bright."""
+    not_black = np.any(arr > dark_threshold, axis=1)
+    not_white = np.any(arr < white_threshold, axis=1)
+    mask = not_black & not_white
+    filtered_arr = arr[mask]
+    if filtered_arr.size == 0:
+        filtered_arr = arr
+    return filtered_arr
+
+def dominant_color(filtered_arr):
+    colors, counts = np.unique(filtered_arr, axis=0, return_counts=True)
+    return tuple(colors[np.argmax(counts)])
+
+def average_color(filtered_arr):
+    return tuple(np.mean(filtered_arr, axis=0).astype(int))
+
+def median_color(filtered_arr):
+    return tuple(np.median(filtered_arr, axis=0).astype(int))
+
+def kmeans_color(filtered_arr, k=3):
+    if KMeans is None:
+        raise ImportError("scikit-learn not installed")
+    kmeans = KMeans(n_clusters=k, n_init=10, random_state=0)
+    kmeans.fit(filtered_arr)
+    colors, counts = np.unique(kmeans.labels_, return_counts=True)
+    dom_cluster = np.argmax(counts)
+    return tuple(map(int, kmeans.cluster_centers_[dom_cluster]))
+
+def most_saturated_color(filtered_arr, min_value=64):
+    """
+    Pick the pixel with highest saturation, but only among those with V >= min_value (in HSV).
+    """
+    if cv2 is None:
+        raise ImportError("cv2 (opencv-python) not installed")
+    arr = filtered_arr.reshape(-1, 1, 3).astype(np.uint8)
+    hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV).reshape(-1,3)
+    # Only consider pixels above brightness threshold
+    candidates = hsv[:,2] >= min_value
+    if np.any(candidates):
+        idx = np.argmax(hsv[candidates,1])
+        idx_all = np.where(candidates)[0][idx]
+    else:
+        # fallback to any pixel if none are bright enough
+        idx_all = np.argmax(hsv[:,1])
+    return tuple(filtered_arr[idx_all])
+
+def get_color_by_algorithm(image_path, resize_to=(100,100), dark_threshold=30, white_threshold=225, algo="dominant"):
+    img = Image.open(image_path).convert('RGB')
+    img = img.resize(resize_to, resample=Image.NEAREST)
+    arr = np.array(img).reshape(-1, 3)
+    filtered_arr = filter_pixels(arr, dark_threshold, white_threshold)
+    if algo == "dominant":
+        return dominant_color(filtered_arr)
+    elif algo == "average":
+        return average_color(filtered_arr)
+    elif algo == "median":
+        return median_color(filtered_arr)
+    elif algo == "kmeans":
+        return kmeans_color(filtered_arr, k=3)
+    elif algo == "saturated":
+        return most_saturated_color(filtered_arr)
+    else:
+        raise ValueError(f"Unknown color algorithm: {algo}")
+
+
 def get_dominant_color(image_path, resize_to=(100, 100), dark_threshold=30, white_threshold=225):
     """Find the dominant color, ignoring very dark pixels."""
     img = Image.open(image_path).convert('RGB')
@@ -50,6 +121,7 @@ def get_dominant_color(image_path, resize_to=(100, 100), dark_threshold=30, whit
         filtered_arr = arr
     colors, counts = np.unique(filtered_arr, axis=0, return_counts=True)
     return tuple(colors[np.argmax(counts)])
+
 
 def compute_palette_size(ratio, short_side, n_bars):
     """
@@ -79,42 +151,38 @@ def movie_palette(
     video_path, 
     output_path,
     short_side=200,
-    ratio=(5,2),
-    n_bars=400
+    ratio=(2,5),
+    n_bars=400,
+    dark_threshold=30,
+    white_threshold=225,
+    color_algo="dominant"
 ):
-    
     height, width, bar_width = compute_palette_size(ratio, short_side, n_bars)
     print(f"Output image size: {width}x{height}, Bar width: {bar_width}px, Bars: {n_bars}")
 
-
-
-    # 1. Get video duration
     duration = get_video_duration(video_path)
     print(f"Video duration: {duration:.2f} seconds")
-
-    # 2. Calculate sample points
     times = np.linspace(0, duration, n_bars, endpoint=False)
-
-    # 3. Process frames
     tmp_dir = 'movie_palette_tmp'
     os.makedirs(tmp_dir, exist_ok=True)
     palette = np.zeros((height, width, 3), dtype=np.uint8)
 
-    print("Extracting frames and computing dominant colors...")
+    print("Extracting frames and computing colors...")
     for i, t in enumerate(tqdm(times, desc="Processing")):
         frame_path = os.path.join(tmp_dir, f'frame_{i:04d}.jpg')
         extract_frame_at(video_path, t, frame_path)
-        dom_color = get_dominant_color(frame_path, dark_threshold=20)
-        # Fill bar_width columns with the color
-        palette[:, i*bar_width:(i+1)*bar_width] = dom_color
+        color = get_color_by_algorithm(
+            frame_path, 
+            dark_threshold=dark_threshold,
+            white_threshold=white_threshold,
+            algo=color_algo
+        )
+        palette[:, i*bar_width:(i+1)*bar_width] = color
         os.remove(frame_path)
 
-    # 4. Save the result
     result_img = Image.fromarray(palette, 'RGB')
     result_img.save(output_path)
     print(f"Saved: {output_path}")
-
-    # 5. Cleanup
     shutil.rmtree(tmp_dir)
 
 def parse_ratio(ratio_str):
@@ -129,10 +197,12 @@ if __name__ == "__main__":
     parser.add_argument("video_path", help="Path to the video file.")
     parser.add_argument("output_path", help="Path to save the palette image.")
     parser.add_argument("--short-side", type=int, default=200, help="Shorter side of output image (default: 200).")
-    parser.add_argument("--ratio", type=parse_ratio, default=(2,5), help="Aspect ratio W:H (default: 5:2).")
+    parser.add_argument("--ratio", type=parse_ratio, default=(2,5), help="Aspect ratio H:W (default: 2:5).")
     parser.add_argument("--n-bars", type=int, default=400, help="Number of color bars (default: 400).")
     parser.add_argument("--dark-threshold", type=int, default=30, help="Ignore pixels darker than this value (default: 30)")
     parser.add_argument("--white-threshold", type=int, default=225, help="Ignore pixels brighter than this value (default: 225)")
+    parser.add_argument("--color-algo", choices=["dominant", "average", "median", "kmeans", "saturated"], default="dominant",
+                        help="Algorithm for picking color for each frame: dominant, average, median, kmeans, saturated (default: dominant)")
 
     args = parser.parse_args()
 
@@ -141,5 +211,8 @@ if __name__ == "__main__":
         args.output_path,
         args.short_side,
         args.ratio,
-        args.n_bars
+        args.n_bars,
+        args.dark_threshold,
+        args.white_threshold,
+        args.color_algo
     )
